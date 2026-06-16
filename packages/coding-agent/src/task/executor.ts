@@ -715,17 +715,20 @@ export function createSubagentSettings(
 	for (const key of Object.keys(SETTINGS_SCHEMA) as SettingPath[]) {
 		snapshot[key] = baseSettings.get(key);
 	}
-	return Settings.isolated({
-		...snapshot,
-		"async.enabled": false,
-		"bash.autoBackground.enabled": false,
+	return Settings.isolated(
+		{
+			...snapshot,
+			"async.enabled": false,
+			"bash.autoBackground.enabled": false,
 
-		// Subagents run headless — there is no UI to confirm prompts against, so
-		// the parent task approval is the authorization boundary. Use yolo mode
-		// to preserve unattended subagent execution. User `tools.approval` policies still apply.
-		"tools.approvalMode": "yolo",
-		...overrides,
-	});
+			// Subagents run headless — there is no UI to confirm prompts against, so
+			// the parent task approval is the authorization boundary. Use yolo mode
+			// to preserve unattended subagent execution. User `tools.approval` policies still apply.
+			"tools.approvalMode": "yolo",
+			...overrides,
+		},
+		{ activeProfile: baseSettings.getProfileName() },
+	);
 }
 
 type AbortReason = "signal" | "terminate" | "timeout" | "budget";

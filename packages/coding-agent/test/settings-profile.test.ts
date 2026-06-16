@@ -139,6 +139,14 @@ describe("Settings profile integration", () => {
 		expect(workStorage.getModelUsageOrder()).toContain("unit/work-model");
 		expect(workStorage.getModelUsageOrder()).not.toContain("unit/default-model");
 	});
+
+	it("subagent settings inherit the parent active profile", () => {
+		const instance = Settings.isolated({ autocompleteMaxVisible: 12 }, { activeProfile: "work" });
+		const subagentSettings = createSubagentSettings(instance);
+		expect(subagentSettings.getProfileName()).toBe("work");
+		expect(subagentSettings.get("autocompleteMaxVisible")).toBe(12);
+	});
+
 	it("auth broker config reads the active profile's own config.yml", async () => {
 		const workAgentDir = profileAgentDir("work");
 		await writeConfig(testAgentDir, {
