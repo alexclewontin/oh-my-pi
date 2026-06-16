@@ -574,6 +574,15 @@ const usageSegment: StatusLineSegment = {
 	},
 };
 
+const profileSegment: StatusLineSegment = {
+	id: "profile",
+	render(ctx) {
+		const profile = ctx.session.sessionManager?.buildSessionContext().profile ?? "default";
+		if (!profile || profile === "default") return { content: "", visible: false };
+		return { content: theme.fg("accent", sanitizeStatusText(profile)), visible: true };
+	},
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Segment Registry
 // ═══════════════════════════════════════════════════════════════════════════
@@ -603,6 +612,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	session_name: sessionNameSegment,
 	usage: usageSegment,
 	collab: collabSegment,
+	profile: profileSegment,
 };
 
 export function renderSegment(id: StatusLineSegmentId, ctx: SegmentContext): RenderedSegment {

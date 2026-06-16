@@ -33,7 +33,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 	},
 
 	full: {
-		leftSegments: ["pi", "hostname", "model", "mode", "path", "git", "pr", "subagents"],
+		leftSegments: ["pi", "hostname", "model", "mode", "profile", "path", "git", "pr", "subagents"],
 		rightSegments: [
 			"session_name",
 			"cache_hit",
