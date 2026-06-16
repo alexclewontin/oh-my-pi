@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/profile` live switching in the TUI for the existing profile feature, including a profile picker when invoked without arguments
+- Added a `profile` status-line segment and included it in the `full` preset so active named profiles stay visible while working
+
 ## [16.0.2] - 2026-06-16
 
 ### Added
@@ -135,6 +140,10 @@
 - Ctrl+C now works like Escape in selector components, so mashing Ctrl+C will eventually close the program ([#400](https://github.com/badlogic/pi-mono/pull/400) by [@mitsuhiko](https://github.com/mitsuhiko))
 - External editor (Ctrl-G) now shows full pasted content instead of `[paste #N ...]` placeholders ([#444](https://github.com/badlogic/pi-mono/pull/444) by [@aliou](https://github.com/aliou))
 - Subagent example README referenced incorrect filename `subagent.ts` instead of `index.ts` ([#427](https://github.com/badlogic/pi-mono/pull/427) by [@Whamp](https://github.com/Whamp))
+### Added
+
+- Added `/profile` live switching in the TUI for the existing profile feature, including a profile picker when invoked without arguments
+- Added a `profile` status-line segment and included it in the `full` preset so active named profiles stay visible while working
 
 ## [16.0.0] - 2026-06-15
 
