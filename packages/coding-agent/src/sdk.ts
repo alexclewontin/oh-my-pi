@@ -35,6 +35,7 @@ import {
 	prompt,
 	Snowflake,
 } from "@oh-my-pi/pi-utils";
+import { getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
 import { ADVISOR_READONLY_TOOL_NAMES, discoverWatchdogFiles } from "./advisor";
 import { type AsyncJob, AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
@@ -102,6 +103,7 @@ import {
 import { MCP_CONNECTING_EVENT_CHANNEL, type McpConnectingEvent } from "./mcp/startup-events";
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import type { MnemopiSessionState } from "./mnemopi/state";
+import { getProfileDir } from "./profiles/profile-store";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
@@ -604,6 +606,8 @@ function getDefaultAgentDir(): string {
 	return getAgentDir();
 }
 
+const DEFAULT_PROFILE_LABEL = "default";
+
 function resolveSnapshotTtlMs(): number {
 	const raw = process.env.OMP_AUTH_BROKER_SNAPSHOT_TTL_MS;
 	if (raw === undefined) return DEFAULT_SNAPSHOT_CACHE_TTL_MS;
@@ -620,7 +624,7 @@ function resolveSnapshotTtlMs(): number {
 /**
  * Create an AuthStorage instance.
  *
- * Default: local SQLite store at `<agentDir>/agent.db`.
+ * Default: local SQLite store from the active profile's own `<agentDir>/agent.db`.
  *
  * Broker mode: when `OMP_AUTH_BROKER_URL` is set, credentials are pulled from
  * a remote auth-broker over the wire. Refresh tokens never leave the broker;
@@ -1091,7 +1095,12 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	const cwd = options.cwd ?? getProjectDir();
-	const agentDir = options.agentDir ?? getDefaultAgentDir();
+	const resolvedSessionProfile = options.settings?.getProfileName() ?? getActiveProfile() ?? DEFAULT_PROFILE_LABEL;
+	const agentDir =
+		options.agentDir ??
+		options.settings?.getAgentDir() ??
+		getProfileDir(getDefaultAgentDir(), resolvedSessionProfile);
+	const agentDirRef = { current: agentDir };
 	const eventBus = options.eventBus ?? new EventBus();
 
 	registerSshCleanup();
@@ -1123,7 +1132,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			startupCredentialDisabledEvents.push(event);
 		}
 	});
-	const settings = options.settings ?? (await logger.time("settings", Settings.init, { cwd, agentDir }));
+	const settings =
+		options.settings ??
+		(await logger.time("settings", Settings.init, { cwd, agentDir, activeProfile: resolvedSessionProfile }));
 	logger.time("initializeWithSettings", initializeWithSettings, settings);
 	if (!options.modelRegistry) {
 		modelRegistry.refreshInBackground();
@@ -1988,7 +1999,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			cwd,
 			sessionManager,
 			modelRegistry,
-			() => (hasSession ? createSessionMemoryRuntimeContext(session, agentDir, cwd) : undefined),
+			() => (hasSession ? createSessionMemoryRuntimeContext(session, agentDirRef.current, cwd) : undefined),
 			settings,
 		);
 
@@ -2451,6 +2462,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				? undefined
 				: serviceTierSetting;
 
+		// Mutable ref so switchProfile() can re-route provider calls after construction
+		const modelRegistryRef = { current: modelRegistry };
+
 		agent = new Agent({
 			initialState: {
 				systemPrompt,
@@ -2488,9 +2502,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				// policy — force-refresh the same account, then rotate to a sibling —
 				// and may legitimately yield no key when every account is exhausted.
 				if (ctx?.error !== undefined) {
-					return createApiKeyResolver(modelRegistry, provider, { sessionId: agent.sessionId })(ctx);
+					return createApiKeyResolver(modelRegistryRef.current, provider, { sessionId: agent.sessionId })(ctx);
 				}
-				const key = await modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
+				const key = await modelRegistryRef.current.getApiKeyForProvider(provider, agent.sessionId);
 				if (!key) {
 					throw new Error(`No API key found for provider "${provider}"`);
 				}
@@ -2547,6 +2561,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (initialServiceTier) {
 				sessionManager.appendServiceTierChange(initialServiceTier);
 			}
+			// Record initial profile so resume restores the correct profile
+			sessionManager.appendProfileChange(resolvedSessionProfile);
 		}
 
 		// Hard-isolated read-only toolset for the advisor (built unconditionally so
@@ -2640,6 +2656,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			parentEvalSessionId: options.parentEvalSessionId,
 			advisorReadOnlyTools,
 		});
+		session.bindProfileRuntime(modelRegistryRef, agentDirRef, nextAgentDir => startMemoryBackend(nextAgentDir));
 		hasSession = true;
 		if (asyncJobManager) {
 			session.yieldQueue.register<AsyncResultEntry>("async-result", {
@@ -2761,13 +2778,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 		}
 
-		const startMemoryBackend = async () => {
+		const startMemoryBackend = async (memoryAgentDir: string = agentDirRef.current) => {
 			const memoryBackend = await resolveMemoryBackend(settings);
 			await memoryBackend.start({
 				session,
 				settings,
-				modelRegistry,
-				agentDir,
+				modelRegistry: modelRegistryRef.current,
+				agentDir: memoryAgentDir,
 				taskDepth,
 				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentMnemopiSessionState: options.parentMnemopiSessionState,

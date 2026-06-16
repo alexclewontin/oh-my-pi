@@ -5,8 +5,10 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { setNextRequestDebugPath } from "@oh-my-pi/pi-ai/utils/request-debug";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { APP_NAME, setProjectDir } from "@oh-my-pi/pi-utils";
+import { normalizeProfileName } from "@oh-my-pi/pi-utils/dirs";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
+import { ModelRegistry } from "../config/model-registry";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
 import {
@@ -26,6 +28,8 @@ import {
 import { resolveMemoryBackend } from "../memory-backend";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
+import { getProfileDir } from "../profiles/profile-store";
+import { discoverAuthStorage } from "../sdk";
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { urlHyperlinkAlways } from "../tui";
@@ -60,6 +64,12 @@ function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
 	ctx.updateEditorTopBorder();
 	ctx.ui.requestRender();
+}
+
+const DEFAULT_PROFILE_LABEL = "default";
+
+function toProfileLabel(profile: string | undefined): string {
+	return normalizeProfileName(profile) ?? DEFAULT_PROFILE_LABEL;
 }
 
 /** `/fast status` label: "off", "on", or scope-qualified "on (… only)". */
@@ -205,6 +215,51 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	if (verb === "" || verb === "elide") return "elide";
 	if (verb === "images") return "images";
 	return { error: `Unknown /shake mode "${verb}". Use elide or images.` };
+}
+
+async function buildRuntimeForProfile(
+	baseAgentDir: string,
+	target: string,
+): Promise<{ name: string; agentDir: string; modelRegistry: ModelRegistry; credentialSourceLabel: string }> {
+	const agentDir = getProfileDir(baseAgentDir, target);
+	const authStorage = await discoverAuthStorage(agentDir);
+	const modelRegistry = new ModelRegistry(authStorage);
+	const credentialSourceLabel = authStorage.describeCredentialSource("") ?? target;
+	return { name: target, agentDir, modelRegistry, credentialSourceLabel };
+}
+
+interface ProfileCommandUI {
+	info(msg: string): Promise<void> | void;
+	warn(msg: string): Promise<void> | void;
+	error(msg: string): Promise<void> | void;
+}
+
+async function runProfileSlashCommand(
+	args: string,
+	session: AgentSession,
+	currentProfile: string,
+	ui: ProfileCommandUI,
+): Promise<void> {
+	if (!args || args === "current") {
+		await ui.info(`Active profile: ${currentProfile}`);
+		return;
+	}
+	if (args === "list") {
+		await ui.warn("Profile listing is no longer supported. Use /profile current or /profile <name>.");
+		return;
+	}
+	try {
+		const targetProfile = toProfileLabel(args);
+		const baseAgentDir = session.settings.getAgentDir();
+		const { name, agentDir, modelRegistry, credentialSourceLabel } = await buildRuntimeForProfile(
+			baseAgentDir,
+			targetProfile,
+		);
+		await session.switchProfile({ name, agentDir, modelRegistry, credentialSourceLabel });
+		await ui.info(`Switched to profile: ${name}`);
+	} catch (err) {
+		await ui.error(`Failed to switch profile: ${err instanceof Error ? err.message : String(err)}`);
+	}
 }
 
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
@@ -1314,6 +1369,49 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			const customInstructions = command.args || undefined;
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleHandoffCommand(customInstructions);
+		},
+	},
+	{
+		name: "profile",
+		aliases: ["profiles"],
+		description: "Show or switch the active profile",
+		inlineHint: "[name|current]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const args = command.args.trim();
+			const currentProfile = runtime.sessionManager.buildSessionContext().profile;
+			await runProfileSlashCommand(args, runtime.session, currentProfile, {
+				info: msg => runtime.output(msg),
+				warn: msg => runtime.output(msg),
+				error: msg => runtime.output(msg),
+			});
+			return commandConsumed();
+		},
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			const args = command.args.trim();
+			const currentProfile = runtime.ctx.sessionManager.buildSessionContext().profile;
+			if (!args) {
+				await runtime.ctx.showProfileSelector(currentProfile, async name => {
+					const rt = await buildRuntimeForProfile(runtime.ctx.session.settings.getAgentDir(), name);
+					await runtime.ctx.session.switchProfile(rt);
+				});
+				return;
+			}
+			const isSwitching = args !== "current" && args !== "list";
+			if (isSwitching) {
+				if (runtime.ctx.session.isStreaming) {
+					runtime.ctx.showWarning("Cannot switch profile while a turn is running.");
+					return;
+				}
+				runtime.ctx.showStatus(`Switching to profile: ${toProfileLabel(args)}\u2026`);
+			}
+			await runProfileSlashCommand(args, runtime.ctx.session, currentProfile, {
+				info: msg => runtime.ctx.showStatus(msg),
+				warn: msg => runtime.ctx.showWarning(msg),
+				error: msg => runtime.ctx.showError(msg),
+			});
+			if (isSwitching) runtime.ctx.ui.requestRender();
 		},
 	},
 	{

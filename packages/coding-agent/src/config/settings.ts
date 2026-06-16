@@ -24,6 +24,7 @@ import {
 	procmgr,
 	setDefaultTabWidth,
 } from "@oh-my-pi/pi-utils";
+import { getActiveProfile, normalizeProfileName, setProfile } from "@oh-my-pi/pi-utils/dirs";
 import { YAML } from "bun";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
@@ -66,6 +67,8 @@ export interface SettingsOptions {
 	overrides?: Partial<Record<SettingPath, unknown>>;
 	/** Extra config.yml-style overlays loaded after global/project settings */
 	configFiles?: string[];
+	/** Active profile name for this session. Default: "default" */
+	activeProfile?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -120,6 +123,12 @@ type PathScopedStringArrayEntry = {
 
 function expandTilde(p: string): string {
 	return p === "~" ? os.homedir() : p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
+}
+
+const DEFAULT_PROFILE_LABEL = "default";
+
+function toProfileLabel(profile: string | undefined): string {
+	return normalizeProfileName(profile) ?? DEFAULT_PROFILE_LABEL;
 }
 
 function normalizePathPrefix(prefix: string): string {
@@ -198,6 +207,8 @@ export class Settings {
 	#storage: AgentStorage | null = null;
 
 	#configFiles: string[] = [];
+	/** User-facing active profile label ("default" when no named profile is active). */
+	#profileName: string = DEFAULT_PROFILE_LABEL;
 	/** Global settings from config.yml */
 	#global: RawSettings = {};
 	/** Project settings from .claude/settings.yml etc */
@@ -230,6 +241,7 @@ export class Settings {
 		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, "config.yml");
 		this.#configFiles = options.configFiles?.map(file => path.resolve(this.#cwd, expandTilde(file))) ?? [];
 		this.#persist = !options.inMemory;
+		this.#profileName = toProfileLabel(options.activeProfile ?? getActiveProfile());
 
 		if (options.overrides) {
 			for (const [key, value] of Object.entries(options.overrides)) {
@@ -275,8 +287,11 @@ export class Settings {
 	 * Create an isolated instance for testing.
 	 * Does not affect the global singleton.
 	 */
-	static isolated(overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
-		const instance = new Settings({ inMemory: true, overrides });
+	static isolated(
+		overrides: Partial<Record<SettingPath, unknown>> = {},
+		options?: { activeProfile?: string },
+	): Settings {
+		const instance = new Settings({ inMemory: true, overrides, activeProfile: options?.activeProfile });
 		instance.#rebuildMerged();
 		return instance;
 	}
@@ -399,6 +414,7 @@ export class Settings {
 			cwd,
 			agentDir: this.#agentDir,
 			inMemory: !this.#persist,
+			activeProfile: this.#profileName,
 		});
 		cloned.#storage = this.#storage;
 		cloned.#global = structuredClone(this.#global);
@@ -409,6 +425,39 @@ export class Settings {
 		cloned.#rebuildMerged();
 		cloned.#fireAllHooks();
 		return cloned;
+	}
+	/**
+	 * Get the active profile name.
+	 */
+	getProfileName(): string {
+		return getActiveProfile() ?? this.#profileName;
+	}
+
+	/**
+	 * Switch the active profile in-place for runtime profile switching.
+	 * Flushes the current profile, activates the target dir-based profile, reloads
+	 * that profile's config.yml + agent.db, and preserves project/config/runtime overlays.
+	 * Called by AgentSession.switchProfile() for in-session profile switching.
+	 */
+	async reloadForProfile(profileName: string): Promise<void> {
+		if (!this.#persist) {
+			this.#profileName = toProfileLabel(profileName);
+			this.#rebuildMerged();
+			this.#fireAllHooks();
+			return;
+		}
+
+		await this.flush();
+		setProfile(normalizeProfileName(profileName));
+		this.#profileName = getActiveProfile() ?? DEFAULT_PROFILE_LABEL;
+		this.#agentDir = path.normalize(getAgentDir());
+		this.#configPath = path.join(this.#agentDir, "config.yml");
+		this.#storage = await AgentStorage.open(getAgentDbPath(this.#agentDir));
+		await this.#migrateFromLegacy();
+		this.#global = await this.#loadYaml(this.#configPath!);
+		await this.#seedLastChangelogVersionMarker();
+		this.#rebuildMerged();
+		this.#fireAllHooks();
 	}
 
 	/**

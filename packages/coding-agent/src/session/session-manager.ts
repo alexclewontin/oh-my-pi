@@ -26,6 +26,7 @@ import {
 	type ModeChangeEntry,
 	type ModelChangeEntry,
 	type NewSessionOptions,
+	type ProfileChangeEntry,
 	type ServiceTierChangeEntry,
 	type SessionEntry,
 	type SessionHeader,
@@ -758,9 +759,10 @@ export class SessionManager {
 
 	/**
 	 * Fork the current session into a new file with the same entries.
+	 * @param targetSessionDir Optional destination session directory; defaults to the current session dir.
 	 * @returns the old and new session file paths, or undefined when not persisting.
 	 */
-	async fork(): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
+	async fork(targetSessionDir?: string): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
 		if (!this.#persist || !this.#sessionFile) return undefined;
 
 		const oldSessionFile = this.#sessionFile;
@@ -769,8 +771,11 @@ export class SessionManager {
 		this.#clearDiskError();
 
 		const timestamp = nowIso();
+		const nextSessionDir = targetSessionDir ? path.resolve(targetSessionDir) : this.#sessionDir;
+		this.#storage.ensureDirSync(nextSessionDir);
+		this.#sessionDir = nextSessionDir;
 		this.#sessionId = mintSessionId();
-		this.#sessionFile = path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
+		this.#sessionFile = path.join(nextSessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
 		this.#header = {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,
@@ -1142,6 +1147,12 @@ export class SessionManager {
 
 	appendModeChange(mode: string, data?: Record<string, unknown>): string {
 		const entry: ModeChangeEntry = { type: "mode_change", ...this.#freshEntryFields(), mode, data };
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+	/** Append a profile-label change as child of current leaf, then advance leaf. Returns entry id. */
+	appendProfileChange(profileLabel: string): string {
+		const entry: ProfileChangeEntry = { type: "profile_change", ...this.#freshEntryFields(), profile: profileLabel };
 		this.#recordEntry(entry);
 		return entry.id;
 	}

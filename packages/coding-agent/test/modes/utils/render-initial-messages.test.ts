@@ -32,6 +32,7 @@ function makeEmptyContext(): SessionContext {
 		selectedMCPToolNames: [],
 		hasPersistedMCPToolSelection: false,
 		mode: "none",
+		profile: "default",
 	};
 }
 

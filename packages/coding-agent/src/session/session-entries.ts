@@ -134,6 +134,20 @@ export interface ModeChangeEntry extends SessionEntryBase {
 	/** Optional mode-specific data (e.g. plan file path) */
 	data?: Record<string, unknown>;
 }
+/** Profile change entry — records the active dir-based profile label for this branch. */
+export interface ProfileChangeEntry extends SessionEntryBase {
+	type: "profile_change";
+	profile: string;
+}
+
+// Augment pi-agent-core's `SessionEntry` extension point so functions that
+// expect the upstream entry union (compaction, shake, etc.) accept the
+// profile_change entry. Avoids duplicating the declaration in pi-agent.
+declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
+	interface CustomCompactionSessionEntries {
+		profileChange: ProfileChangeEntry;
+	}
+}
 
 /**
  * Custom message entry for extensions to inject messages into LLM context.
@@ -171,7 +185,8 @@ export type SessionEntry =
 	| TtsrInjectionEntry
 	| MCPToolSelectionEntry
 	| SessionInitEntry
-	| ModeChangeEntry;
+	| ModeChangeEntry
+	| ProfileChangeEntry;
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;

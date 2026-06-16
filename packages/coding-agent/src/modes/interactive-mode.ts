@@ -3673,6 +3673,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#selectorController.showResetUsageSelector();
 	}
 
+	showProfileSelector(currentProfile: string, onSwitch: (name: string) => Promise<void>): Promise<void> {
+		return this.#selectorController.showProfileSelector(currentProfile, onSwitch);
+	}
+
 	showProviderSetup(): Promise<void> {
 		return runProviderSetupWizard(this);
 	}

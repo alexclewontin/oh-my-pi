@@ -4,6 +4,8 @@ import * as snapcompact from "@oh-my-pi/snapcompact";
 import { createBranchSummaryMessage, createCompactionSummaryMessage, createCustomMessage } from "./messages";
 import { type CompactionEntry, EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
 
+const DEFAULT_PROFILE_LABEL = "default";
+
 export interface SessionContext {
 	messages: AgentMessage[];
 	thinkingLevel?: string;
@@ -20,6 +22,8 @@ export interface SessionContext {
 	mode: string;
 	/** Mode-specific data from the last mode_change entry */
 	modeData?: Record<string, unknown>;
+	/** Active dir-based profile label for this session branch. Defaults to "default". */
+	profile: string;
 }
 
 /** Lists session model strings to try when restoring, in fallback order. */
@@ -94,6 +98,7 @@ export function buildSessionContext(
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
 			mode: "none",
+			profile: DEFAULT_PROFILE_LABEL,
 		};
 	}
 	if (leafId) {
@@ -114,6 +119,7 @@ export function buildSessionContext(
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
 			mode: "none",
+			profile: DEFAULT_PROFILE_LABEL,
 		};
 	}
 
@@ -135,6 +141,7 @@ export function buildSessionContext(
 	let hasPersistedMCPToolSelection = false;
 	let mode = "none";
 	let modeData: Record<string, unknown> | undefined;
+	let profile = DEFAULT_PROFILE_LABEL;
 	// Track whether an explicit `model_change` with role="default" has been
 	// seen on this path. Once a user (or the agent itself) records an
 	// explicit default, later assistant-message inference must NOT overwrite
@@ -180,6 +187,8 @@ export function buildSessionContext(
 		} else if (entry.type === "mode_change") {
 			mode = entry.mode;
 			modeData = entry.data;
+		} else if (entry.type === "profile_change") {
+			profile = entry.profile;
 		}
 	}
 
@@ -348,5 +357,6 @@ export function buildSessionContext(
 		hasPersistedMCPToolSelection,
 		mode,
 		modeData,
+		profile,
 	};
 }

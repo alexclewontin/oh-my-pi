@@ -289,7 +289,7 @@ import { formatSessionDumpText } from "./session-dump-format";
 import type { BranchSummaryEntry, CompactionEntry, NewSessionOptions } from "./session-entries";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import { formatSessionHistoryMarkdown } from "./session-history-format";
-import type { SessionManager } from "./session-manager";
+import { SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-stop-classifier";
@@ -1103,6 +1103,9 @@ export class AgentSession {
 
 	// Model registry for API key resolution
 	#modelRegistry: ModelRegistry;
+	#registryHolder: { current: ModelRegistry } | null = null;
+	#agentDirHolder: { current: string } | null = null;
+	#restartMemoryBackend: ((agentDir: string) => Promise<void>) | null = null;
 
 	// Tool registry and prompt builder for extensions
 	#toolRegistry: Map<string, AgentTool>;
@@ -6170,6 +6173,103 @@ export class AgentSession {
 		}
 
 		return true;
+	}
+	/**
+	 * Bind SDK-owned mutable runtime holders so switchProfile() can re-route
+	 * provider closures and profile-scoped runtime paths without recreating the
+	 * agent. Called once by the SDK after construction.
+	 */
+	bindProfileRuntime(
+		registryHolder: { current: ModelRegistry },
+		agentDirHolder: { current: string },
+		restartMemoryBackend: (agentDir: string) => Promise<void>,
+	): void {
+		this.#registryHolder = registryHolder;
+		registryHolder.current = this.#modelRegistry;
+		this.#agentDirHolder = agentDirHolder;
+		this.#restartMemoryBackend = restartMemoryBackend;
+	}
+
+	/**
+	 * Switch the active profile by forking the live session into the target
+	 * profile's session root, then reloading profile-scoped runtime state.
+	 */
+	async switchProfile(runtime: {
+		name: string;
+		agentDir: string;
+		modelRegistry: ModelRegistry;
+		credentialSourceLabel: string;
+	}): Promise<void> {
+		if (this.isStreaming) {
+			throw new AgentBusyError();
+		}
+		const currentProfile = this.sessionManager.buildSessionContext().profile;
+		if (currentProfile === runtime.name) return;
+
+		// Reload settings before refreshing the new registry: provider discovery
+		// reads profile-scoped settings such as disabledProviders/modelProviderOrder.
+		await this.settings.flush();
+		await this.settings.reloadForProfile(runtime.name);
+		await runtime.modelRegistry.refresh("online");
+
+		const targetSessionDir = SessionManager.getDefaultSessionDir(this.settings.getCwd(), runtime.agentDir);
+		const forkResult = await this.sessionManager.fork(targetSessionDir);
+		if (forkResult) {
+			const oldArtifactDir = forkResult.oldSessionFile.slice(0, -6);
+			const newArtifactDir = forkResult.newSessionFile.slice(0, -6);
+			try {
+				const oldDirStat = await fs.promises.stat(oldArtifactDir);
+				if (oldDirStat.isDirectory()) {
+					await fs.promises.cp(oldArtifactDir, newArtifactDir, { recursive: true });
+				}
+			} catch (err) {
+				if (!isEnoent(err)) {
+					logger.warn("Failed to copy artifacts during profile switch", {
+						oldArtifactDir,
+						newArtifactDir,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			}
+		} else {
+			await this.sessionManager.moveTo(this.settings.getCwd(), targetSessionDir);
+		}
+
+		// Update model registry — also fixes the SDK captured-closure regression.
+		this.#modelRegistry = runtime.modelRegistry;
+		if (this.#registryHolder) this.#registryHolder.current = runtime.modelRegistry;
+		if (this.#agentDirHolder) this.#agentDirHolder.current = runtime.agentDir;
+
+		// Record profile change after the fork/move so the old profile's session
+		// remains a resume point for the old profile and the new branch records
+		// the profile that selected the follow-up model.
+		this.sessionManager.appendProfileChange(runtime.name);
+
+		this.#syncAgentSessionId();
+		this.#rekeyHindsightMemoryForCurrentSessionId();
+		this.#rekeyMnemopiMemoryForCurrentSessionId();
+		await this.#restartMemoryBackend?.(runtime.agentDir);
+		await this.refreshBaseSystemPrompt();
+
+		const defaultRole = this.settings.getModelRole("default");
+		if (defaultRole) {
+			const resolved = resolveModelRoleValue(defaultRole, this.#modelRegistry.getAvailable(), {
+				settings: this.settings,
+				matchPreferences: getModelMatchPreferences(this.settings),
+				modelRegistry: this.#modelRegistry,
+			});
+			if (resolved.model && !modelsAreEqual(resolved.model, this.model)) {
+				await this.setModelTemporary(resolved.model, resolved.thinkingLevel);
+			}
+		}
+
+		// Notify UI
+		await this.#emitSessionEvent({
+			type: "notice",
+			level: "info",
+			message: `Switched to profile: ${runtime.name} (${runtime.credentialSourceLabel})`,
+			source: "profile",
+		});
 	}
 
 	// =========================================================================

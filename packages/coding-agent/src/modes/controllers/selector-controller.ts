@@ -27,6 +27,7 @@ import {
 	theme,
 } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
+import { listProfileDirs } from "../../profiles/profile-store";
 import type { ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
@@ -59,6 +60,7 @@ import { LogoutAccountSelectorComponent } from "../components/logout-account-sel
 import { ModelSelectorComponent } from "../components/model-selector";
 import { OAuthSelectorComponent } from "../components/oauth-selector";
 import { PluginSelectorComponent } from "../components/plugin-selector";
+import { ProfileSelectorComponent } from "../components/profile-selector";
 import { ResetUsageSelectorComponent } from "../components/reset-usage-selector";
 import { SessionSelectorComponent } from "../components/session-selector";
 import { SettingsSelectorComponent } from "../components/settings-selector";
@@ -1177,6 +1179,44 @@ export class SelectorController {
 				},
 			);
 			return { component: selector, focus: selector };
+		});
+	}
+
+	async showProfileSelector(currentProfile: string, onSwitch: (name: string) => Promise<void>): Promise<void> {
+		const agentDir = this.ctx.session.settings.getAgentDir();
+		const profiles = await listProfileDirs(agentDir);
+		this.showSelector(done => {
+			const selector = new ProfileSelectorComponent(
+				profiles,
+				currentProfile,
+				async name => {
+					done();
+					if (name === currentProfile) {
+						this.ctx.ui.requestRender();
+						return;
+					}
+					if (this.ctx.session.isStreaming) {
+						this.ctx.showWarning("Cannot switch profile while a turn is running.");
+						this.ctx.ui.requestRender();
+						return;
+					}
+					this.ctx.showStatus(`Switching to profile: ${name}\u2026`);
+					this.ctx.ui.requestRender();
+					try {
+						await onSwitch(name);
+						this.ctx.showStatus(`Switched to profile: ${name}`);
+					} catch (err) {
+						this.ctx.showError(`Failed to switch profile: ${err instanceof Error ? err.message : String(err)}`);
+					}
+					this.ctx.statusLine.invalidate();
+					this.ctx.ui.requestRender();
+				},
+				() => {
+					done();
+					this.ctx.ui.requestRender();
+				},
+			);
+			return { component: selector, focus: selector.getSelectList() };
 		});
 	}
 

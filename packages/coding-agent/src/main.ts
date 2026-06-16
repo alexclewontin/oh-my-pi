@@ -11,6 +11,7 @@ import { EventLoopKeepalive } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	$env,
+	getAgentDir,
 	getLogPath,
 	getProjectDir,
 	logger,
@@ -19,6 +20,7 @@ import {
 	setProjectDir,
 	VERSION,
 } from "@oh-my-pi/pi-utils";
+import { getActiveProfile, setProfile } from "@oh-my-pi/pi-utils/dirs";
 import chalk from "chalk";
 import { reset as resetCapabilities } from "./capability";
 import { type Args, reportUnrecognizedFlags } from "./cli/args";
@@ -938,10 +940,15 @@ export async function runRootCommand(
 	await logger.time("applyStartupCwd", applyStartupCwd, parsedArgs);
 
 	const notifs: (InteractiveModeNotify | null)[] = [];
+	const hasExplicitProfile = parsedArgs.profile !== undefined || process.env.OMP_PROFILE !== undefined;
+	let activeProfile = getActiveProfile() ?? "default";
 
 	// Create AuthStorage and ModelRegistry upfront
-	const authStorage = await logger.time("discoverAuthStorage", deps.discoverAuthStorage ?? discoverAuthStorage);
-	const modelRegistry = logger.time("modelRegistry:init", () => new ModelRegistry(authStorage));
+	let authStorage = await logger.time(
+		"discoverAuthStorage",
+		deps.discoverAuthStorage ?? (() => discoverAuthStorage(getAgentDir())),
+	);
+	let modelRegistry = logger.time("modelRegistry:init", () => new ModelRegistry(authStorage));
 
 	if (parsedArgs.version) {
 		process.stdout.write(`${VERSION}\n`);
@@ -992,7 +999,12 @@ export async function runRootCommand(
 
 	let cwd = getProjectDir();
 	const settingsInstance =
-		deps.settings ?? (await logger.time("settings:init", Settings.init, { cwd, configFiles: parsedArgs.config }));
+		deps.settings ??
+		(await logger.time("settings:init", Settings.init, {
+			cwd,
+			configFiles: parsedArgs.config,
+			activeProfile,
+		}));
 	if (parsedArgs.approvalMode) {
 		// Runtime override (not persisted): every settings.get("tools.approvalMode") downstream
 		// sees this value. The wrapper still honours --auto-approve / --yolo on top of it.
@@ -1136,6 +1148,31 @@ export async function runRootCommand(
 			await settingsInstance.reloadForCwd(cwd);
 		}
 		sessionManager = await SessionManager.open(selected.path);
+	}
+
+	const sessionProfile = sessionManager?.buildSessionContext().profile;
+	if (!hasExplicitProfile && sessionProfile && sessionProfile !== activeProfile) {
+		setProfile(sessionProfile);
+		activeProfile = getActiveProfile() ?? "default";
+		authStorage = await logger.time(
+			"discoverAuthStorage:session-profile",
+			deps.discoverAuthStorage ?? (() => discoverAuthStorage(getAgentDir())),
+		);
+		modelRegistry = new ModelRegistry(authStorage);
+		await settingsInstance.reloadForProfile(activeProfile);
+
+		const activeModelPatterns = parsedArgs.models ?? settingsInstance.get("enabledModels");
+		if (activeModelPatterns && activeModelPatterns.length > 0) {
+			scopedModels = await logger.time(
+				"resolveModelScope:session-profile",
+				resolveModelScope,
+				activeModelPatterns,
+				modelRegistry,
+				getModelMatchPreferences(settingsInstance),
+			);
+		} else {
+			scopedModels = [];
+		}
 	}
 
 	await pluginPreloadPromise;
